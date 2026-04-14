@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "_comment": "Sanitized starter config. Populate location labels locally before running production workflows.",
+  "remote_labels": [],
+  "preferred_location_labels": [],
+  "hybrid_policy": "allowed_if_location_matches",
+  "normalized_values": {
+    "remote": "remote",
+    "preferred_metro": "preferred_metro",
+    "unknown": "unknown",
+    "rejected": "rejected"
+  },
+  "hard_reject_if_only": [],
+  "ambiguous_triggers": [],
+  "ambiguous_policy": "needs_attention"
+}

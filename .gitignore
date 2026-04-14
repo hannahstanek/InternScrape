@@ -1,0 +1,34 @@
+# Secrets — never commit
+.env
+*.env
+
+# Applicant profiles with real data (keep only .example.json and schema)
+profile/*.json
+!profile/*.example.json
+!profile/*.schema.json
+
+# Resumes and personal docs
+*.pdf
+*.docx
+*.doc
+resumes/
+
+# Database
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Browser automation artifacts
+/tmp/fill_plan_*.json
+playwright-report/
+test-results/
+
+# Node
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db

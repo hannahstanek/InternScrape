@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ApplicantProfile",
+  "description": "Schema for a single applicant. Values are loaded at runtime from the secret store — never hardcoded here.",
+  "type": "object",
+  "required": [
+    "profile_id",
+    "name",
+    "email",
+    "work_authorization",
+    "graduation_month",
+    "degree",
+    "major",
+    "university",
+    "resume_variants",
+    "short_answer_templates",
+    "common_answers"
+  ],
+  "properties": {
+    "profile_id": {
+      "type": "string",
+      "description": "Unique slug for this applicant, used to namespace secrets. e.g. 'hannah' or 'applicant_01'"
+    },
+    "name": { "type": "string" },
+    "email": { "type": "string", "format": "email" },
+    "phone": { "type": "string" },
+    "linkedin_url": { "type": "string", "format": "uri" },
+    "github_url": { "type": "string", "format": "uri" },
+    "portfolio_url": { "type": "string", "format": "uri" },
+    "work_authorization": {
+      "type": "string",
+      "enum": ["us_citizen", "us_permanent_resident", "h1b", "opt", "cpt", "tn", "other"],
+      "description": "US work authorization status"
+    },
+    "requires_sponsorship": {
+      "type": "boolean",
+      "description": "Whether the applicant requires visa sponsorship"
+    },
+    "graduation_month": {
+      "type": "string",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])$",
+      "description": "Expected graduation in YYYY-MM format"
+    },
+    "degree": { "type": "string", "description": "e.g. Bachelor of Science" },
+    "major": { "type": "string" },
+    "minor": { "type": "string" },
+    "university": { "type": "string" },
+    "gpa": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 4.0,
+      "description": "GPA on 4.0 scale. null to omit from applications."
+    },
+    "resume_variants": {
+      "type": "object",
+      "description": "Absolute paths to resume PDFs per role family",
+      "properties": {
+        "ai_ml": { "type": "string" },
+        "security": { "type": "string" },
+        "product_management": { "type": "string" },
+        "default": { "type": "string" }
+      },
+      "required": ["default"]
+    },
+    "short_answer_templates": {
+      "type": "object",
+      "description": "Reusable short answer templates. Keep under 300 words each.",
+      "properties": {
+        "why_company": { "type": "string" },
+        "why_role": { "type": "string" },
+        "strengths": { "type": "string" },
+        "projects": { "type": "string" },
+        "diversity_statement": { "type": "string" },
+        "career_goals": { "type": "string" },
+        "impact": { "type": "string" }
+      },
+      "additionalProperties": { "type": "string" }
+    },
+    "common_answers": {
+      "type": "object",
+      "description": "Pre-filled answers for standard form fields",
+      "properties": {
+        "requires_sponsorship": { "type": "string", "enum": ["yes", "no"] },
+        "earliest_start_date": { "type": "string", "description": "YYYY-MM-DD" },
+        "latest_end_date": { "type": "string", "description": "YYYY-MM-DD" },
+        "hours_per_week": { "type": "string" },
+        "preferred_pronouns": { "type": "string" },
+        "gender": { "type": "string" },
+        "ethnicity": { "type": "string" },
+        "veteran_status": { "type": "string" },
+        "disability_status": { "type": "string" },
+        "how_did_you_hear": { "type": "string" }
+      },
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

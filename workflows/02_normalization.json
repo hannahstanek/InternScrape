@@ -1,0 +1,169 @@
+{
+  "name": "02 — Normalization & Scoring",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "normalize-jobs",
+        "responseMode": "onReceived"
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Receive Raw Jobs",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "normalize-jobs"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load config files from disk\nconst fs = require('fs');\n\nconst roleFilters = JSON.parse(\n  fs.readFileSync(process.env.ROLE_FILTERS_PATH || '/Users/YOURNAME/Projects/job-scraper/config/role_filters.json', 'utf8')\n);\nconst locationPolicy = JSON.parse(\n  fs.readFileSync(process.env.LOCATION_POLICY_PATH || '/Users/YOURNAME/Projects/job-scraper/config/location_policy.json', 'utf8')\n);\nconst companiesConfig = JSON.parse(\n  fs.readFileSync(process.env.TARGET_COMPANIES_PATH || '/Users/YOURNAME/Projects/job-scraper/config/target_companies.json', 'utf8')\n);\n\nconst companyMap = {};\nfor (const c of companiesConfig.companies) {\n  companyMap[c.company_id] = c;\n}\n\nreturn [{ json: { roleFilters, locationPolicy, companyMap } }];"
+      },
+      "id": "load-config",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize and score each raw job item.\n// Paste normalize.js functions inline here for n8n Code node execution.\n\nconst crypto = require('crypto');\n\nfunction computeJobKey(companyId, postingId) {\n  return crypto.createHash('sha256').update(`${companyId}::${postingId}`).digest('hex');\n}\n\nfunction normalizeTitle(raw) {\n  return (raw || '').toLowerCase()\n    .replace(/\\(.*?\\)/g, '').replace(/\\[.*?\\]/g, '')\n    .replace(/req#?\\s*\\d+/gi, '').replace(/[-–—|]/g, ' ')\n    .replace(/\\s+/g, ' ').trim();\n}\n\nfunction extractPostingId(url, pageId) {\n  if (pageId) return String(pageId).trim();\n  const patterns = [\n    /\\/jobs?\\/([\\d]+)/i, /[?&](?:job_?id|jobId|req_?id)=([^&]+)/i,\n    /lever\\.co\\/\\w+\\/([^/?]+)/i, /gh\\/(\\d+)/i\n  ];\n  for (const p of patterns) { const m = url.match(p); if (m) return m[1]; }\n  return crypto.createHash('sha256').update(url).digest('hex').slice(0, 16);\n}\n\nfunction normalizeLocation(raw, policy) {\n  if (!raw) return 'unknown';\n  const lower = raw.toLowerCase();\n  const check = (labels) => labels.some(l => lower.includes(l.toLowerCase()));\n  if (check(policy.hard_reject_if_only) && !check(policy.remote_labels) &&\n      !check(policy.austin_metro_labels) && !check(policy.san_antonio_metro_labels)) return 'rejected';\n  if (check(policy.remote_labels)) return 'remote';\n  if (check(policy.austin_metro_labels)) return 'austin_metro';\n  if (check(policy.san_antonio_metro_labels)) return 'san_antonio_metro';\n  if (check(policy.ambiguous_triggers)) return 'unknown';\n  return 'rejected';\n}\n\nfunction detectTerm(title, desc, filters) {\n  const h = `${title} ${desc || ''}`.toLowerCase();\n  return filters.require_term.some(t => h.includes(t.toLowerCase())) ? 'fall_2026' : null;\n}\n\nfunction detectType(title, desc, filters) {\n  const h = `${title} ${desc || ''}`.toLowerCase();\n  return filters.require_type.some(t => h.includes(t.toLowerCase()));\n}\n\nfunction detectRoleFamily(titleNorm, desc, filters) {\n  const h = `${titleNorm} ${desc || ''}`.toLowerCase();\n  for (const [family, cfg] of Object.entries(filters.role_families)) {\n    if (cfg.exclusions.some(ex => h.includes(ex.toLowerCase()))) continue;\n    const matched = cfg.title_keywords.filter(kw => h.includes(kw.toLowerCase()));\n    if (matched.length > 0) return { family, matched };\n  }\n  return null;\n}\n\nfunction hasGlobalExclusion(titleNorm, filters) {\n  return filters.global_exclusions.some(ex => titleNorm.includes(ex.toLowerCase()));\n}\n\n// ---- Main ----\nconst rawJobs = $input.all().map(i => i.json);\nconst config = $('Load Config').first().json;\nconst { roleFilters, locationPolicy, companyMap } = config;\n\nconst results = [];\n\nfor (const raw of rawJobs) {\n  if (raw._needs_browser) {\n    results.push({ json: { ...raw, status: 'needs_attention', filter_reason: 'browser_required' } });\n    continue;\n  }\n\n  const company = companyMap[raw.company_id] || { company_id: raw.company_id, tier: 5 };\n  const titleNorm = normalizeTitle(raw.title);\n  const postingId = extractPostingId(raw.url || '', raw.posting_id);\n  const jobKey = computeJobKey(raw.company_id, postingId);\n  const locationNorm = normalizeLocation(raw.location, locationPolicy);\n\n  if (locationNorm === 'rejected') {\n    results.push({ json: { job_key: jobKey, posting_id: postingId, company_id: raw.company_id,\n      title_raw: raw.title, title_normalized: titleNorm, location_raw: raw.location,\n      location_normalized: locationNorm, source: raw.source || 'careers_page',\n      source_url: raw.url || '', term: null, role_family: null, match_tags: '[]',\n      match_score: 0, status: 'filtered_out', filter_reason: `location_rejected: \"${raw.location}\"` } });\n    continue;\n  }\n\n  if (hasGlobalExclusion(titleNorm, roleFilters)) {\n    results.push({ json: { job_key: jobKey, posting_id: postingId, company_id: raw.company_id,\n      title_raw: raw.title, title_normalized: titleNorm, location_raw: raw.location,\n      location_normalized: locationNorm, source: raw.source || 'careers_page',\n      source_url: raw.url || '', term: null, role_family: null, match_tags: '[]',\n      match_score: 0, status: 'filtered_out', filter_reason: 'global_exclusion_in_title' } });\n    continue;\n  }\n\n  if (!detectType(raw.title, raw.description, roleFilters)) {\n    results.push({ json: { job_key: jobKey, posting_id: postingId, company_id: raw.company_id,\n      title_raw: raw.title, title_normalized: titleNorm, location_raw: raw.location,\n      location_normalized: locationNorm, source: raw.source || 'careers_page',\n      source_url: raw.url || '', term: null, role_family: null, match_tags: '[]',\n      match_score: 0, status: 'filtered_out', filter_reason: 'not_internship' } });\n    continue;\n  }\n\n  const term = detectTerm(raw.title, raw.description, roleFilters);\n  if (!term) {\n    results.push({ json: { job_key: jobKey, posting_id: postingId, company_id: raw.company_id,\n      title_raw: raw.title, title_normalized: titleNorm, location_raw: raw.location,\n      location_normalized: locationNorm, source: raw.source || 'careers_page',\n      source_url: raw.url || '', term: null, role_family: null, match_tags: '[]',\n      match_score: 0, status: 'filtered_out', filter_reason: 'wrong_term' } });\n    continue;\n  }\n\n  const familyResult = detectRoleFamily(titleNorm, raw.description, roleFilters);\n  if (!familyResult) {\n    results.push({ json: { job_key: jobKey, posting_id: postingId, company_id: raw.company_id,\n      title_raw: raw.title, title_normalized: titleNorm, location_raw: raw.location,\n      location_normalized: locationNorm, source: raw.source || 'careers_page',\n      source_url: raw.url || '', term, role_family: null, match_tags: '[]',\n      match_score: 0, status: 'filtered_out', filter_reason: 'no_role_family_match' } });\n    continue;\n  }\n\n  const scoring = roleFilters.scoring;\n  const score = scoring.title_match_weight + (scoring[`tier_${company.tier}_bonus`] || 0);\n  const finalStatus = locationNorm === 'unknown' ? 'needs_attention' : 'eligible';\n\n  results.push({ json: {\n    job_key: jobKey,\n    company_id: raw.company_id,\n    company_display: company.display_name || raw.company_id,\n    title_raw: raw.title,\n    title_normalized: titleNorm,\n    location_raw: raw.location || '',\n    location_normalized: locationNorm,\n    source: raw.source || 'careers_page',\n    source_url: raw.url || '',\n    posting_id: postingId,\n    term,\n    role_family: familyResult.family,\n    match_tags: JSON.stringify(familyResult.matched),\n    match_score: score,\n    status: finalStatus,\n    filter_reason: locationNorm === 'unknown' ? `ambiguous_location: \"${raw.location}\"` : null,\n    first_seen_at: new Date().toISOString(),\n    last_seen_at: new Date().toISOString()\n  } });\n}\n\nreturn results;"
+      },
+      "id": "normalize-score",
+      "name": "Normalize & Score Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO jobs (job_key, company_id, company_display, title_raw, title_normalized, location_raw, location_normalized, source, source_url, posting_id, term, role_family, match_tags, match_score, status, filter_reason, first_seen_at, last_seen_at)\nVALUES ('{{ $json.job_key }}', '{{ $json.company_id }}', '{{ $json.company_display }}', '{{ $json.title_raw }}', '{{ $json.title_normalized }}', '{{ $json.location_raw }}', '{{ $json.location_normalized }}', '{{ $json.source }}', '{{ $json.source_url }}', '{{ $json.posting_id }}', '{{ $json.term }}', '{{ $json.role_family }}', '{{ $json.match_tags }}', {{ $json.match_score }}, '{{ $json.status }}', '{{ $json.filter_reason }}', '{{ $json.first_seen_at }}', '{{ $json.last_seen_at }}')\nON CONFLICT(job_key) DO UPDATE SET\n  last_seen_at = excluded.last_seen_at,\n  source_url = CASE WHEN excluded.source = 'careers_page' THEN excluded.source_url ELSE jobs.source_url END,\n  source = CASE WHEN excluded.source = 'careers_page' THEN 'careers_page' ELSE jobs.source END\nWHERE jobs.status NOT IN ('submitted', 'rejected_by_user', 'pending_approval');",
+        "options": {}
+      },
+      "id": "upsert-jobs-db",
+      "name": "Upsert Jobs → SQLite",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "eligible",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "filter-eligible",
+      "name": "Only Eligible",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_DEDUP || 'wf_deduplication' }}",
+        "options": {}
+      },
+      "id": "trigger-dedup",
+      "name": "Trigger: Deduplication",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Receive Raw Jobs": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Normalize & Score Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize & Score Jobs": {
+      "main": [
+        [
+          {
+            "node": "Upsert Jobs → SQLite",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Jobs → SQLite": {
+      "main": [
+        [
+          {
+            "node": "Only Eligible",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Only Eligible": {
+      "main": [
+        [
+          {
+            "node": "Trigger: Deduplication",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "id": "b5300f6b-178f-45d0-a9ac-732a59740ed7"
+}

@@ -1,0 +1,290 @@
+{
+  "name": "07 — Maintenance & Safe-Stop",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule: Daily at 2am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark stale jobs as closed\nUPDATE jobs\nSET status = 'closed', closed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')\nWHERE last_seen_at < datetime('now', '-{{ $env.JOB_STALE_DAYS || 14 }} days')\n  AND status NOT IN ('submitted', 'rejected_by_user', 'closed');\n\n-- Count needs_attention jobs older than threshold\nSELECT COUNT(*) as stale_count FROM jobs\nWHERE status = 'needs_attention'\n  AND updated_at < datetime('now', '-{{ $env.STALE_ATTENTION_HOURS || 48 }} hours');",
+        "options": {}
+      },
+      "id": "maintenance-queries",
+      "name": "Run Maintenance Queries",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT COUNT(*) FROM jobs WHERE status = 'eligible') as eligible_count,\n  (SELECT COUNT(*) FROM jobs WHERE status = 'submitted') as submitted_count,\n  (SELECT COUNT(*) FROM jobs WHERE status = 'needs_attention') as needs_attention_count,\n  (SELECT COUNT(*) FROM jobs WHERE status = 'filtered_out') as filtered_count,\n  (SELECT COUNT(*) FROM applications WHERE draft_status = 'draft_complete' AND approval_status = 'pending') as awaiting_approval,\n  (SELECT COUNT(*) FROM applications WHERE draft_status = 'needs_user_input') as needs_user_input,\n  (SELECT COUNT(*) FROM crawl_log WHERE status IN ('captcha_blocked','auth_expired','failed') AND crawl_started_at > datetime('now', '-24 hours')) as recent_failures;",
+        "options": {}
+      },
+      "id": "run-summary",
+      "name": "Build Run Summary",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check safe-stop conditions.\n// If any trigger condition is met, emit a STOP alert and return stop=true.\n\nconst stats = $input.first().json;\nconst reasons = [];\n\nif (stats.needs_attention_count >= 3) {\n  reasons.push(`${stats.needs_attention_count} jobs in needs_attention simultaneously`);\n}\nif (stats.recent_failures >= 5) {\n  reasons.push(`${stats.recent_failures} crawl failures in last 24h`);\n}\n\nconst summary = [\n  `=== Daily Run Summary ===`,\n  `Eligible: ${stats.eligible_count}`,\n  `Submitted: ${stats.submitted_count}`,\n  `Needs Attention: ${stats.needs_attention_count}`,\n  `Filtered Out: ${stats.filtered_count}`,\n  `Awaiting Approval: ${stats.awaiting_approval}`,\n  `Needs User Input: ${stats.needs_user_input}`,\n  `Crawl Failures (24h): ${stats.recent_failures}`,\n  reasons.length > 0 ? `\\nSAFE-STOP TRIGGERED: ${reasons.join('; ')}` : '\\nSystem healthy.'\n].join('\\n');\n\nreturn [{ json: {\n  stop: reasons.length > 0,\n  stop_reasons: reasons,\n  summary,\n  stats\n} }];"
+      },
+      "id": "check-safe-stop",
+      "name": "Check Safe-Stop Conditions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.stop }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        }
+      },
+      "id": "should-stop",
+      "name": "Should Stop?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_ALERTING || 'wf_alerting' }}",
+        "options": {}
+      },
+      "id": "alert-stop",
+      "name": "Alert: Safe-Stop Triggered",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_ALERTING || 'wf_alerting' }}",
+        "options": {}
+      },
+      "id": "alert-summary",
+      "name": "Alert: Daily Summary",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Alert on stale needs_attention jobs\nSELECT j.job_key, j.company_display, j.title_normalized, j.source_url, j.status, j.updated_at\nFROM jobs j\nWHERE j.status = 'needs_attention'\n  AND j.updated_at < datetime('now', '-{{ $env.STALE_ATTENTION_HOURS || 48 }} hours')\nORDER BY j.updated_at ASC;",
+        "options": {}
+      },
+      "id": "find-stale",
+      "name": "Find Stale Attention Jobs",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        900,
+        500
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.job_key }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        }
+      },
+      "id": "has-stale",
+      "name": "Any Stale?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_ALERTING || 'wf_alerting' }}",
+        "options": {}
+      },
+      "id": "alert-stale",
+      "name": "Alert: STALE_ATTENTION",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule: Daily at 2am": {
+      "main": [
+        [
+          {
+            "node": "Run Maintenance Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Maintenance Queries": {
+      "main": [
+        [
+          {
+            "node": "Build Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Run Summary": {
+      "main": [
+        [
+          {
+            "node": "Check Safe-Stop Conditions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Safe-Stop Conditions": {
+      "main": [
+        [
+          {
+            "node": "Should Stop?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Stale Attention Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Stop?": {
+      "main": [
+        [
+          {
+            "node": "Alert: Safe-Stop Triggered",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert: Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Stale Attention Jobs": {
+      "main": [
+        [
+          {
+            "node": "Any Stale?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Stale?": {
+      "main": [
+        [
+          {
+            "node": "Alert: STALE_ATTENTION",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "id": "7575fa87-f44b-4440-94ca-7451269cce50"
+}

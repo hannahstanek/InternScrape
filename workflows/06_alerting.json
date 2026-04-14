@@ -1,0 +1,182 @@
+{
+  "name": "06 — Alerting",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "send-alert",
+        "responseMode": "onReceived"
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Receive Alert",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "send-alert"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO alerts (alert_type, job_key, application_id, company_id, detail, source_url, created_at)\nVALUES (\n  '{{ $json.alert_type }}',\n  '{{ $json.job_key || null }}',\n  '{{ $json.application_id || null }}',\n  '{{ $json.company_id || null }}',\n  '{{ $json.detail }}',\n  '{{ $json.source_url || null }}',\n  '{{ new Date().toISOString() }}'\n);",
+        "options": {}
+      },
+      "id": "log-alert",
+      "name": "Log Alert to DB",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format alert message for all channels\nconst alert = $input.first().json;\nconst baseUrl = process.env.N8N_WEBHOOK_BASE_URL || 'http://localhost:5678/webhook';\n\nconst EMOJI = {\n  NEW_ELIGIBLE_JOB: '[NEW JOB]',\n  DRAFT_READY: '[DRAFT READY]',\n  NEEDS_USER_INPUT: '[ACTION REQUIRED]',\n  CAPTCHA_BLOCKED: '[BLOCKED]',\n  AUTH_EXPIRED: '[AUTH EXPIRED]',\n  SELECTOR_BROKEN: '[SCRAPER BROKEN]',\n  SUBMISSION_FAILED: '[SUBMISSION FAILED]',\n  STALE_ATTENTION: '[STALE]',\n  COMPANY_PENDING: '[NEW COMPANY DETECTED]'\n};\n\nconst label = EMOJI[alert.alert_type] || '[ALERT]';\nconst approvalLink = alert.application_id\n  ? `\\nApprove: POST ${baseUrl}/approval {application_id: \"${alert.application_id}\", action: \"approve\"}\\nReject: POST ${baseUrl}/approval {application_id: \"${alert.application_id}\", action: \"reject\"}`\n  : '';\n\nconst subject = `Job Scraper ${label}: ${alert.alert_type}`;\nconst body = [\n  `Type: ${alert.alert_type}`,\n  alert.company_id ? `Company: ${alert.company_id}` : null,\n  alert.job_key ? `Job Key: ${alert.job_key}` : null,\n  alert.application_id ? `Application: ${alert.application_id}` : null,\n  alert.source_url ? `URL: ${alert.source_url}` : null,\n  `Detail: ${alert.detail}`,\n  `Time: ${new Date().toISOString()}`,\n  approvalLink\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { subject, body, alert } }];"
+      },
+      "id": "format-message",
+      "name": "Format Alert Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.ALERT_EMAIL_FROM || 'n8n-alerts@localhost' }}",
+        "toEmail": "={{ $env.ALERT_EMAIL_TO }}",
+        "subject": "={{ $json.subject }}",
+        "text": "={{ $json.body }}"
+      },
+      "id": "send-email",
+      "name": "Send Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        700,
+        200
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credentials",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $env.ALERT_SLACK_WEBHOOK_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "slack-configured",
+      "name": "Slack Configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.ALERT_SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.subject + '\\n' + $json.body }}"
+            }
+          ]
+        }
+      },
+      "id": "send-slack",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Receive Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Alert to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Alert to DB": {
+      "main": [
+        [
+          {
+            "node": "Format Alert Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert Message": {
+      "main": [
+        [
+          {
+            "node": "Send Email Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Configured?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "id": "e48dc8e4-e3ac-48d0-a3eb-eb6f1adea55a"
+}

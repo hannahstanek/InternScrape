@@ -1,0 +1,212 @@
+{
+  "name": "01 — Discovery Poller",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger (every 4h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load target companies config\nconst fs = require('fs');\nconst path = process.env.TARGET_COMPANIES_PATH || '/Users/YOURNAME/Projects/job-scraper/config/target_companies.json';\nconst config = JSON.parse(fs.readFileSync(path, 'utf8'));\nconst active = config.companies.filter(c => c.active);\nreturn active.map(c => ({ json: c }));"
+      },
+      "id": "load-companies",
+      "name": "Load Active Companies",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fetch job listings from official careers page via HTTP\n// This is the primary source of truth — aggregators are supplemental only.\nconst company = $input.item.json;\nconst axios = require('axios');\n\nlet jobs = [];\nlet crawlStatus = 'success';\nlet errorDetail = null;\n\ntry {\n  const response = await axios.get(company.careers_url, {\n    timeout: 15000,\n    headers: {\n      'User-Agent': 'Mozilla/5.0 (compatible; JobScraperBot/1.0; research)'\n    }\n  });\n\n  // NOTE: Each ATS platform requires a custom parser.\n  // The Code node below (ATS Parser) handles platform-specific extraction.\n  // This node just fetches the raw page/API response.\n  jobs = [{\n    raw_html: response.data,\n    status_code: response.status,\n    company_id: company.company_id,\n    ats_platform: company.ats_platform,\n    careers_url: company.careers_url\n  }];\n} catch (err) {\n  const msg = err.message || '';\n  if (msg.includes('captcha') || msg.includes('403') || msg.includes('429')) {\n    crawlStatus = 'captcha_blocked';\n  } else if (msg.includes('401') || msg.includes('auth')) {\n    crawlStatus = 'auth_expired';\n  } else {\n    crawlStatus = 'failed';\n  }\n  errorDetail = msg;\n  jobs = [];\n}\n\nreturn [{\n  json: {\n    company,\n    jobs,\n    crawl_status: crawlStatus,\n    error_detail: errorDetail,\n    crawled_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "fetch-careers-page",
+      "name": "Fetch Careers Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.crawl_status }}",
+              "rightValue": "success",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-crawl-ok",
+      "name": "Crawl OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ATS-specific job extraction.\n// Each platform exposes job data differently.\n// Extend this switch as new ATS platforms are encountered.\n\nconst { company, jobs, crawled_at } = $input.item.json;\nconst rawHtml = jobs[0]?.raw_html || '';\nconst platform = company.ats_platform;\nlet extracted = [];\n\nswitch (platform) {\n  case 'greenhouse': {\n    // Greenhouse JSON feed: careers_url typically ends in /jobs\n    // Try to parse as JSON first (Greenhouse board API)\n    try {\n      const data = JSON.parse(rawHtml);\n      const jobList = data.jobs || data.positions || [];\n      extracted = jobList.map(j => ({\n        title: j.title,\n        location: j.location?.name || '',\n        url: j.absolute_url || j.url || '',\n        posting_id: String(j.id || ''),\n        description: j.content || '',\n        company_id: company.company_id\n      }));\n    } catch {\n      // fallback: HTML scraping (set selector_error)\n      extracted = [];\n    }\n    break;\n  }\n  case 'lever': {\n    try {\n      const data = JSON.parse(rawHtml);\n      const postings = Array.isArray(data) ? data : (data.postings || []);\n      extracted = postings.map(p => ({\n        title: p.text || p.title || '',\n        location: p.categories?.location || p.workplaceType || '',\n        url: p.hostedUrl || p.applyUrl || '',\n        posting_id: p.id || '',\n        description: p.descriptionPlain || p.description || '',\n        company_id: company.company_id\n      }));\n    } catch {\n      extracted = [];\n    }\n    break;\n  }\n  case 'workday': {\n    // Workday uses a JS-rendered page; HTML scraping required.\n    // Flag for browser automation sidecar.\n    extracted = [{ _needs_browser: true, company_id: company.company_id }];\n    break;\n  }\n  default: {\n    // Generic HTML — flag for selector-based extraction.\n    extracted = [{ _needs_browser: true, company_id: company.company_id }];\n  }\n}\n\nreturn extracted.map(j => ({\n  json: { ...j, crawled_at, source: 'careers_page', company }\n}));"
+      },
+      "id": "ats-parser",
+      "name": "ATS Parser",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log crawl error and emit alert payload\nconst { company, crawl_status, error_detail, crawled_at } = $input.item.json;\n\nconst alertType = {\n  'captcha_blocked': 'CAPTCHA_BLOCKED',\n  'auth_expired': 'AUTH_EXPIRED',\n  'selector_error': 'SELECTOR_BROKEN',\n  'failed': 'SELECTOR_BROKEN'\n}[crawl_status] || 'SELECTOR_BROKEN';\n\nreturn [{\n  json: {\n    alert_type: alertType,\n    company_id: company.company_id,\n    source_url: company.careers_url,\n    detail: `Crawl failed for ${company.display_name}: ${error_detail}`,\n    created_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "log-crawl-error",
+      "name": "Log Crawl Error → Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_NORMALIZATION || 'wf_normalization' }}",
+        "options": {}
+      },
+      "id": "trigger-normalization",
+      "name": "Trigger: Normalization Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_ALERTING || 'wf_alerting' }}",
+        "options": {}
+      },
+      "id": "trigger-alert",
+      "name": "Trigger: Alerting Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        450
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (every 4h)": {
+      "main": [
+        [
+          {
+            "node": "Load Active Companies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Active Companies": {
+      "main": [
+        [
+          {
+            "node": "Fetch Careers Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Careers Page": {
+      "main": [
+        [
+          {
+            "node": "Crawl OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crawl OK?": {
+      "main": [
+        [
+          {
+            "node": "ATS Parser",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Crawl Error → Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ATS Parser": {
+      "main": [
+        [
+          {
+            "node": "Trigger: Normalization Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Crawl Error → Alert": {
+      "main": [
+        [
+          {
+            "node": "Trigger: Alerting Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "id": "4a69d5bf-4077-47fb-b86f-f8134130ed5c"
+}

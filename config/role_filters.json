@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "_comment": "Sanitized starter config. Fill in the role terms and scoring rules locally.",
+  "require_term": [],
+  "require_type": [],
+  "global_exclusions": [],
+  "role_families": {},
+  "scoring": {
+    "title_match_weight": 10,
+    "description_boost_weight": 2,
+    "minimum_score_to_eligible": 10
+  }
+}

@@ -1,0 +1,269 @@
+{
+  "name": "04 — Application Drafter",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "draft-application",
+        "responseMode": "onReceived"
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Draft Application",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "draft-application"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT a.*, j.source_url, j.role_family, j.company_id, j.company_display, j.title_normalized\nFROM applications a\nJOIN jobs j ON a.job_key = j.job_key\nWHERE a.application_id = '{{ $json.application_id }}'\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "load-application",
+      "name": "Load Application + Job",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load applicant profile from file based on profile_id\nconst fs = require('fs');\nconst appRecord = $input.first().json;\nconst profilePaths = (process.env.APPLICANT_PROFILE_PATHS || '').split(',').map(p => p.trim()).filter(Boolean);\n\nlet profile = null;\nfor (const p of profilePaths) {\n  const candidate = JSON.parse(fs.readFileSync(p, 'utf8'));\n  if (candidate.profile_id === appRecord.profile_id) {\n    profile = candidate;\n    break;\n  }\n}\n\nif (!profile) {\n  return [{ json: {\n    error: true,\n    reason: `profile_not_found: ${appRecord.profile_id}`,\n    application_id: appRecord.application_id\n  }}];\n}\n\n// Select resume variant based on role family\nconst resumeVariant = profile.resume_variants[appRecord.role_family] || profile.resume_variants.default;\n\nreturn [{ json: { ...appRecord, profile, resume_variant: resumeVariant } }];"
+      },
+      "id": "load-profile",
+      "name": "Load Applicant Profile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Field mapping engine.\n// Maps known form field labels/names to profile data.\n// This runs BEFORE browser automation — it builds the fill plan.\n// Browser automation then executes the plan.\n// If any field cannot be mapped, flag as novel_question.\n\nconst data = $input.first().json;\nif (data.error) return [{ json: data }];\n\nconst { profile, role_family, company_display, title_normalized, source_url } = data;\n\n// Standard field name → profile key mapping\nconst FIELD_MAP = {\n  // Personal\n  'first name': profile.name?.split(' ')[0] || '',\n  'last name': profile.name?.split(' ').slice(1).join(' ') || '',\n  'full name': profile.name,\n  'name': profile.name,\n  'email': profile.email,\n  'email address': profile.email,\n  'phone': profile.phone,\n  'phone number': profile.phone,\n  'linkedin': profile.linkedin_url,\n  'linkedin url': profile.linkedin_url,\n  'linkedin profile': profile.linkedin_url,\n  'github': profile.github_url,\n  'portfolio': profile.portfolio_url,\n  'website': profile.portfolio_url,\n\n  // Work Auth\n  'work authorization': profile.work_authorization,\n  'are you authorized to work': profile.work_authorization === 'us_citizen' ? 'Yes' : 'No',\n  'visa sponsorship': profile.requires_sponsorship ? 'Yes' : 'No',\n  'require sponsorship': profile.requires_sponsorship ? 'Yes' : 'No',\n  'will you now or in the future require': profile.requires_sponsorship ? 'Yes' : 'No',\n\n  // Education\n  'university': profile.university,\n  'school': profile.university,\n  'college': profile.university,\n  'degree': profile.degree,\n  'major': profile.major,\n  'gpa': profile.gpa !== null ? String(profile.gpa) : '',\n  'graduation date': profile.graduation_month,\n  'expected graduation': profile.graduation_month,\n\n  // Dates\n  'start date': profile.common_answers?.earliest_start_date,\n  'earliest start date': profile.common_answers?.earliest_start_date,\n  'end date': profile.common_answers?.latest_end_date,\n  'availability': `${profile.common_answers?.earliest_start_date} to ${profile.common_answers?.latest_end_date}`,\n  'hours per week': profile.common_answers?.hours_per_week,\n\n  // Demographic (voluntary)\n  'gender': profile.common_answers?.gender,\n  'ethnicity': profile.common_answers?.ethnicity,\n  'race': profile.common_answers?.ethnicity,\n  'veteran': profile.common_answers?.veteran_status,\n  'disability': profile.common_answers?.disability_status,\n  'pronouns': profile.common_answers?.preferred_pronouns,\n  'how did you hear': profile.common_answers?.how_did_you_hear,\n  'how did you find': profile.common_answers?.how_did_you_hear,\n\n  // Short answers\n  'why are you interested in': profile.short_answer_templates?.why_company,\n  'why this company': profile.short_answer_templates?.why_company,\n  'why do you want to work': profile.short_answer_templates?.why_company,\n  'why this role': profile.short_answer_templates?.why_role,\n  'why this position': profile.short_answer_templates?.why_role,\n  'describe a project': profile.short_answer_templates?.projects,\n  'tell us about a project': profile.short_answer_templates?.projects,\n  'career goals': profile.short_answer_templates?.career_goals,\n  'strengths': profile.short_answer_templates?.strengths,\n  'what are your strengths': profile.short_answer_templates?.strengths,\n  'diversity': profile.short_answer_templates?.diversity_statement,\n};\n\nreturn [{ json: {\n  ...data,\n  fill_plan: FIELD_MAP,\n  fill_plan_ready: true\n} }];"
+      },
+      "id": "build-fill-plan",
+      "name": "Build Fill Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "command": "node {{ $env.BROWSER_SCRIPT_PATH || '/Users/YOURNAME/Projects/job-scraper/scripts/browser_agent.js' }} fill '{{ $json.application_id }}' '{{ $json.source_url }}' '{{ $json.resume_variant }}'"
+      },
+      "id": "run-browser-agent",
+      "name": "Run Browser Agent",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse browser agent output.\n// The browser_agent.js script outputs a JSON result to stdout.\n// Expected shape:\n// { status: 'draft_complete'|'needs_user_input'|'error', checkpoint: {}, novel_questions: [], error: '' }\n\nconst rawOutput = $input.first().json.stdout || '{}';\nconst appId = $('Build Fill Plan').first().json.application_id;\n\nlet result;\ntry {\n  result = JSON.parse(rawOutput);\n} catch {\n  result = { status: 'error', error: 'browser_agent_output_not_json', checkpoint: {}, novel_questions: [] };\n}\n\nconst draftStatus = result.status === 'draft_complete' ? 'draft_complete'\n  : result.status === 'needs_user_input' ? 'needs_user_input'\n  : 'error';\n\nreturn [{ json: {\n  application_id: appId,\n  draft_status: draftStatus,\n  form_checkpoint: JSON.stringify(result.checkpoint || {}),\n  novel_questions: JSON.stringify(result.novel_questions || []),\n  last_error: result.error || null\n} }];"
+      },
+      "id": "parse-browser-result",
+      "name": "Parse Browser Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE applications SET\n  draft_status = '{{ $json.draft_status }}',\n  form_checkpoint = '{{ $json.form_checkpoint }}',\n  novel_questions = '{{ $json.novel_questions }}',\n  last_error = '{{ $json.last_error }}'\nWHERE application_id = '{{ $json.application_id }}';",
+        "options": {}
+      },
+      "id": "update-application",
+      "name": "Update Application Record",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.draft_status }}",
+              "rightValue": "draft_complete",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-draft-status",
+      "name": "Draft Complete?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_ALERTING || 'wf_alerting' }}",
+        "options": {}
+      },
+      "id": "alert-draft-ready",
+      "name": "Alert: DRAFT_READY",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_ALERTING || 'wf_alerting' }}",
+        "options": {}
+      },
+      "id": "alert-needs-input",
+      "name": "Alert: NEEDS_USER_INPUT",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Draft Application": {
+      "main": [
+        [
+          {
+            "node": "Load Application + Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Application + Job": {
+      "main": [
+        [
+          {
+            "node": "Load Applicant Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Applicant Profile": {
+      "main": [
+        [
+          {
+            "node": "Build Fill Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Fill Plan": {
+      "main": [
+        [
+          {
+            "node": "Run Browser Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Browser Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Browser Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Browser Result": {
+      "main": [
+        [
+          {
+            "node": "Update Application Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Application Record": {
+      "main": [
+        [
+          {
+            "node": "Draft Complete?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Complete?": {
+      "main": [
+        [
+          {
+            "node": "Alert: DRAFT_READY",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert: NEEDS_USER_INPUT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "id": "dd4ff607-c6dd-430f-80a2-cacf35794c2f"
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "Sanitized starter template. Copy this file, fill in your values locally, and keep the real profile out of Git.",
+  "profile_id": "",
+  "name": "",
+  "email": "",
+  "phone": "",
+  "linkedin_url": "",
+  "github_url": "",
+  "portfolio_url": "",
+  "work_authorization": "other",
+  "requires_sponsorship": false,
+  "graduation_month": "",
+  "degree": "",
+  "major": "",
+  "minor": "",
+  "university": "",
+  "gpa": null,
+  "resume_variants": {
+    "default": ""
+  },
+  "short_answer_templates": {},
+  "common_answers": {}
+}

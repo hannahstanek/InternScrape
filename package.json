@@ -1,0 +1,19 @@
+{
+  "name": "job-scraper",
+  "version": "1.0.0",
+  "description": "24/7 internship discovery, deduplication, and application-drafting system. Runs on n8n + SQLite. Never submits without explicit approval.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

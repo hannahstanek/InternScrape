@@ -1,0 +1,209 @@
+{
+  "name": "03 — Deduplication",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "dedup-job",
+        "responseMode": "onReceived"
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Receive Eligible Job",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "dedup-job"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT job_key, status FROM jobs WHERE job_key = '{{ $json.job_key }}' LIMIT 1;",
+        "options": {}
+      },
+      "id": "check-existing",
+      "name": "Check Existing Job",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT application_id, draft_status, approval_status, submitted_at FROM applications WHERE job_key = '{{ $json.job_key }}' LIMIT 1;",
+        "options": {}
+      },
+      "id": "check-existing-application",
+      "name": "Check Existing Application",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Determine if we should create a new application record.\n// Rules:\n// - If job has status = submitted → skip (never reapply)\n// - If job has status = rejected_by_user → skip\n// - If job has status = pending_approval or draft_ready → skip (already in flight)\n// - If application record exists with submitted_at set → skip\n// - Otherwise → proceed to draft\n\nconst job = $('Check Existing Job').first().json;\nconst app = $('Check Existing Application').first().json;\nconst incoming = $('Webhook: Receive Eligible Job').first().json;\n\nconst blockedStatuses = ['submitted', 'rejected_by_user', 'pending_approval', 'draft_ready'];\n\nif (blockedStatuses.includes(job?.status)) {\n  return [{ json: { action: 'skip', reason: `job_status=${job.status}`, job_key: incoming.job_key } }];\n}\n\nif (app?.submitted_at) {\n  return [{ json: { action: 'skip', reason: 'already_submitted', job_key: incoming.job_key } }];\n}\n\nif (app?.draft_status && ['draft_complete', 'needs_user_input', 'in_progress'].includes(app.draft_status)) {\n  return [{ json: { action: 'skip', reason: `draft_in_flight: ${app.draft_status}`, job_key: incoming.job_key } }];\n}\n\n// New, non-duplicate job — load all profiles and create one application per profile\nconst fs = require('fs');\nconst profilePaths = (process.env.APPLICANT_PROFILE_PATHS || '').split(',').map(p => p.trim()).filter(Boolean);\nconst profiles = profilePaths.map(p => JSON.parse(fs.readFileSync(p, 'utf8')));\n\nif (profiles.length === 0) {\n  return [{ json: { action: 'error', reason: 'no_profiles_configured', job_key: incoming.job_key } }];\n}\n\nreturn profiles.map(profile => ({\n  json: { action: 'create', job_key: incoming.job_key, job: incoming, profile_id: profile.profile_id }\n}));"
+      },
+      "id": "dedup-decision",
+      "name": "Dedup Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "create",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "should-create",
+      "name": "Should Create?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO applications (application_id, job_key, profile_id, draft_status, approval_status)\nVALUES (lower(hex(randomblob(16))), '{{ $json.job_key }}', '{{ $json.profile_id }}', 'not_started', 'pending');",
+        "options": {}
+      },
+      "id": "create-application",
+      "name": "Create Application Record",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        200
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_DRAFTING || 'wf_drafting' }}",
+        "options": {}
+      },
+      "id": "trigger-drafting",
+      "name": "Trigger: Drafting Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Receive Eligible Job": {
+      "main": [
+        [
+          {
+            "node": "Check Existing Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing Job": {
+      "main": [
+        [
+          {
+            "node": "Check Existing Application",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing Application": {
+      "main": [
+        [
+          {
+            "node": "Dedup Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup Decision": {
+      "main": [
+        [
+          {
+            "node": "Should Create?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Create?": {
+      "main": [
+        [
+          {
+            "node": "Create Application Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Create Application Record": {
+      "main": [
+        [
+          {
+            "node": "Trigger: Drafting Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "id": "4635dcd6-9430-4c92-a917-110bb48105b9"
+}

@@ -1,0 +1,376 @@
+{
+  "name": "05 — Human Approval Gate & Submission",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "approval",
+        "responseMode": "lastNode"
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Approval Decision",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ],
+      "webhookId": "approval",
+      "notes": "POST body: { application_id: string, action: 'approve'|'reject' }"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate incoming approval payload\nconst body = $input.first().json.body || $input.first().json;\nconst { application_id, action } = body;\n\nif (!application_id) {\n  return [{ json: { error: 'missing_application_id' } }];\n}\nif (!['approve', 'reject'].includes(action)) {\n  return [{ json: { error: `invalid_action: ${action}` } }];\n}\n\nreturn [{ json: { application_id, action } }];"
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT a.*, j.source_url, j.company_display, j.title_normalized, j.role_family, j.job_key\nFROM applications a\nJOIN jobs j ON a.job_key = j.job_key\nWHERE a.application_id = '{{ $json.application_id }}'\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "load-application",
+      "name": "Load Application",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Safety checks before proceeding.\n// Block submission if:\n// - draft_status is not draft_complete\n// - approval_status is already approved or rejected_by_user\n// - submitted_at is already set (never resubmit)\n\nconst app = $('Load Application').first().json;\nconst { action } = $('Validate Input').first().json;\n\nif (!app || !app.application_id) {\n  return [{ json: { error: 'application_not_found', action } }];\n}\n\nif (app.submitted_at) {\n  return [{ json: { error: 'already_submitted', application_id: app.application_id, action } }];\n}\n\nif (app.approval_status === 'rejected_by_user') {\n  return [{ json: { error: 'already_rejected', application_id: app.application_id, action } }];\n}\n\nif (action === 'approve' && app.draft_status !== 'draft_complete') {\n  return [{ json: { error: `cannot_approve_draft_status_${app.draft_status}`, application_id: app.application_id, action } }];\n}\n\nreturn [{ json: { ...app, action, safe_to_proceed: true } }];"
+      },
+      "id": "safety-check",
+      "name": "Safety Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.safe_to_proceed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        }
+      },
+      "id": "is-safe",
+      "name": "Safe to Proceed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "approve-or-reject",
+      "name": "Approve or Reject?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE applications SET approval_status = 'rejected_by_user' WHERE application_id = '{{ $json.application_id }}';\nUPDATE jobs SET status = 'rejected_by_user' WHERE job_key = '{{ $json.job_key }}';",
+        "options": {}
+      },
+      "id": "mark-rejected",
+      "name": "Mark Rejected",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        400
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "node {{ $env.BROWSER_SCRIPT_PATH || '/Users/YOURNAME/Projects/job-scraper/scripts/browser_agent.js' }} submit '{{ $json.application_id }}' '{{ $json.source_url }}' '{{ $json.form_checkpoint }}'"
+      },
+      "id": "run-browser-submit",
+      "name": "Browser: Submit Application",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse submission result from browser agent\nconst rawOutput = $input.first().json.stdout || '{}';\nconst app = $('Safety Check').first().json;\n\nlet result;\ntry {\n  result = JSON.parse(rawOutput);\n} catch {\n  result = { status: 'error', error: 'browser_agent_output_not_json' };\n}\n\nconst success = result.status === 'submitted';\n\nreturn [{ json: {\n  application_id: app.application_id,\n  job_key: app.job_key,\n  success,\n  submitted_at: success ? new Date().toISOString() : null,\n  last_error: result.error || null,\n  alert_type: success ? null : 'SUBMISSION_FAILED'\n} }];"
+      },
+      "id": "parse-submit-result",
+      "name": "Parse Submit Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        }
+      },
+      "id": "submit-ok",
+      "name": "Submitted OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE applications SET approval_status = 'approved', submitted_at = '{{ $json.submitted_at }}' WHERE application_id = '{{ $json.application_id }}';\nUPDATE jobs SET status = 'submitted' WHERE job_key = '{{ $json.job_key }}';",
+        "options": {}
+      },
+      "id": "mark-submitted",
+      "name": "Mark Submitted",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        100
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE applications SET last_error = '{{ $json.last_error }}' WHERE application_id = '{{ $json.application_id }}';\nUPDATE jobs SET status = 'needs_attention' WHERE job_key = '{{ $json.job_key }}';",
+        "options": {}
+      },
+      "id": "mark-submission-failed",
+      "name": "Mark Submission Failed",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "sqlite-jobs-db",
+          "name": "Jobs DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.WORKFLOW_ID_ALERTING || 'wf_alerting' }}",
+        "options": {}
+      },
+      "id": "alert-failure",
+      "name": "Alert: SUBMISSION_FAILED",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Approval Decision": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Load Application",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Application": {
+      "main": [
+        [
+          {
+            "node": "Safety Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safety Check": {
+      "main": [
+        [
+          {
+            "node": "Safe to Proceed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safe to Proceed?": {
+      "main": [
+        [
+          {
+            "node": "Approve or Reject?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Approve or Reject?": {
+      "main": [
+        [
+          {
+            "node": "Browser: Submit Application",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Browser: Submit Application": {
+      "main": [
+        [
+          {
+            "node": "Parse Submit Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Submit Result": {
+      "main": [
+        [
+          {
+            "node": "Submitted OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submitted OK?": {
+      "main": [
+        [
+          {
+            "node": "Mark Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Submission Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Submission Failed": {
+      "main": [
+        [
+          {
+            "node": "Alert: SUBMISSION_FAILED",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "id": "08d6cb0b-4cd4-466d-9fdc-cb299e648329"
+}

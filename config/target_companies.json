@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "_comment": "Sanitized starter config. Add tracked companies locally before running discovery workflows.",
+  "expansion_rules": {
+    "aggregator_mention_threshold": 3,
+    "auto_activate": false,
+    "pending_review_tier": "pending_review"
+  },
+  "companies": []
+}
