@@ -19,7 +19,7 @@
   "properties": {
     "profile_id": {
       "type": "string",
-      "description": "Unique slug for this applicant, used to namespace secrets. e.g. 'hannah' or 'applicant_01'"
+      "description": "'"
     },
     "name": { "type": "string" },
     "email": { "type": "string", "format": "email" },
