@@ -1,21 +1,53 @@
-# Job Scraper — Fall 2026 Internship Hunter
+# InternScrape
 
-24/7 internship discovery, deduplication, and application-drafting system.
-Runs on n8n + SQLite. Never submits without explicit approval.
+InternScrape is a job discovery and application-drafting system for internship searches.
+It is built around `n8n`, `SQLite`, and a browser automation sidecar.
 
----
+The goal is simple:
 
-## Project Structure
+- collect internship postings on a schedule
+- normalize and filter them against your rules
+- avoid duplicates
+- prepare draft applications
+- require explicit approval before anything is submitted
 
-```
-job-scraper/
+This repository is intentionally sanitized for GitHub.
+Personal profiles, real resume paths, live company targeting lists, and local secrets are not included.
+
+## What This Repo Includes
+
+- reusable `n8n` workflows for discovery, normalization, drafting, approval, alerting, and maintenance
+- starter config files under `config/`
+- a schema and starter template for applicant profiles under `profile/`
+- helper scripts for normalization, database setup, and browser automation
+- an `.env.example` file showing the required environment variables
+
+## What This Repo Does Not Include
+
+- your real `.env`
+- your actual applicant profile JSON files
+- your resume files
+- your local SQLite database
+- your customized company targeting lists and personal filtering rules
+
+Those files stay local by design.
+
+## Project Layout
+
+```text
+.
 ├── config/
-│   ├── target_companies.json     # Company seed list with tiers and careers URLs
-│   ├── role_filters.json         # AI/ML, Security, PM keyword rules
-│   └── location_policy.json      # Remote + Austin/San Antonio metro rules
+│   ├── location_policy.json
+│   ├── role_filters.json
+│   └── target_companies.json
 ├── profile/
-│   ├── applicant_profile.schema.json   # JSON schema — shape only
-│   └── applicant_profile.example.json  # Fill this in, save as applicant_01.json etc.
+│   ├── applicant_profile.example.json
+│   └── applicant_profile.schema.json
+├── scripts/
+│   ├── browser_agent.js
+│   ├── init_db.sql
+│   ├── normalize.js
+│   └── setup_credentials.sh
 ├── workflows/
 │   ├── 01_discovery_poller.json
 │   ├── 02_normalization.json
@@ -24,212 +56,192 @@ job-scraper/
 │   ├── 05_approval_gate.json
 │   ├── 06_alerting.json
 │   └── 07_maintenance.json
-├── scripts/
-│   ├── init_db.sql               # Run once to create the database
-│   ├── normalize.js              # Pure normalization logic (no I/O)
-│   └── browser_agent.js         # Browser automation stub (implement with Playwright)
-├── data/
-│   └── jobs.db                  # SQLite database (gitignored)
-├── .env.example                 # Copy to .env, fill in values
-└── .gitignore
+├── .env.example
+├── .gitignore
+├── package.json
+└── README.md
 ```
 
----
+## Workflow Overview
 
-## Setup (first time)
+The system is designed as a pipeline:
 
-### 1. Install dependencies
+1. `01_discovery_poller` finds internship listings from tracked companies.
+2. `02_normalization` standardizes job data and applies role and location filters.
+3. `03_deduplication` removes jobs already seen or already handled.
+4. `04_application_drafter` prepares draft application data and browser automation inputs.
+5. `05_approval_gate` waits for a manual approval or rejection.
+6. `06_alerting` sends notifications when action is needed.
+7. `07_maintenance` handles cleanup and safe-stop conditions.
+
+The important safety rule is:
+
+**nothing should be submitted without an explicit approval step.**
+
+## Quick Start
+
+### 1. Install prerequisites
+
+You will need:
+
+- Node.js
+- `n8n`
+- `sqlite3`
+- Playwright if you plan to use browser automation
+
+Example setup:
 
 ```bash
-# n8n (already done if you ran npm install -g n8n)
-n8n --version
-
-# Optional: Playwright for browser automation
-cd /Users/YOURNAME/Projects/job-scraper
-npm init -y
-npm install playwright
+npm install
 npx playwright install chromium
 ```
 
-### 2. Configure environment
+If `n8n` is not installed yet:
+
+```bash
+npm install -g n8n
+```
+
+### 2. Create your local environment file
 
 ```bash
 cp .env.example .env
-# Edit .env with real values — especially:
-#   DB_PATH
-#   APPLICANT_PROFILE_PATHS
-#   ALERT_EMAIL_TO
 ```
 
-### 3. Create applicant profiles
+Then edit `.env` with your local values.
 
-One JSON file per person. Copy the example and fill in real values:
+At minimum, review:
+
+- `DB_PATH`
+- `APPLICANT_PROFILE_PATHS`
+- `TARGET_COMPANIES_PATH`
+- `ROLE_FILTERS_PATH`
+- `LOCATION_POLICY_PATH`
+- alerting variables such as email, Slack, or SMS settings
+
+### 3. Create your local applicant profile
+
+This repo includes a starter template, not your real profile.
 
 ```bash
 cp profile/applicant_profile.example.json profile/applicant_01.json
-# Edit applicant_01.json — fill in name, email, education, resume paths, etc.
-# Add the path to APPLICANT_PROFILE_PATHS in .env
 ```
 
-For multiple applicants:
-```bash
-cp profile/applicant_profile.example.json profile/applicant_02.json
-# Edit applicant_02.json, give it a unique profile_id
-# Add both paths to APPLICANT_PROFILE_PATHS comma-separated
-```
+Fill in your local copy with:
 
-### 4. Initialize the database
+- name and contact info
+- education details
+- work authorization
+- resume file paths
+- reusable short-answer templates
+- common application answers
+
+Do not commit that filled-in file.
+
+### 4. Customize the sanitized config files
+
+The files in `config/` are starter placeholders in this public repo.
+Before running real searches, update them locally:
+
+- `config/target_companies.json`
+  Add the companies you want to track.
+- `config/role_filters.json`
+  Add your internship terms, role families, and exclusion rules.
+- `config/location_policy.json`
+  Add the location labels and matching logic you want to use.
+
+### 5. Initialize the database
 
 ```bash
 sqlite3 data/jobs.db < scripts/init_db.sql
 ```
 
-### 5. Start n8n
+### 6. Start n8n
 
 ```bash
 n8n start
-# Opens at http://localhost:5678
 ```
 
-### 6. Import workflows
+By default, the UI is available at `http://localhost:5678`.
 
-In the n8n UI:
-1. Go to **Workflows → Import from file**
-2. Import each file in `workflows/` in order (01 through 07)
-3. For each workflow, open it and configure the **SQLite credential**:
-   - Name: `Jobs DB`
-   - Path: your `DB_PATH` from `.env`
-4. Configure **SMTP credential** for email alerts
-5. Set environment variables in n8n: **Settings → Variables** — add all keys from `.env`
-6. Activate workflows 01 and 07 (the pollers)
+### 7. Import the workflows
 
----
+In the `n8n` UI:
 
-## How It Works
+1. Import each JSON file from `workflows/`
+2. Configure the SQLite credential to point at your `DB_PATH`
+3. Configure your alerting credentials
+4. Add the required environment variables in `n8n`
+5. Activate the workflows you want to run
 
-```
-Schedule (every 4h)
-  → 01 Discovery: fetch careers pages for all active companies
-  → 02 Normalization: filter by term, type, role family, location
-  → 03 Deduplication: skip already-seen, submitted, or rejected roles
-  → 04 Drafting: map form fields from profile, run browser agent
-  → Alert: DRAFT_READY (you approve) or NEEDS_USER_INPUT (you answer questions)
+## Approval Flow
 
-You approve via:
-  POST http://localhost:5678/webhook/approval
-  Body: { "application_id": "...", "action": "approve" }
+The repository is built around manual approval before submission.
 
-  → 05 Approval Gate: safety checks, then browser submits
-```
-
----
-
-## Approving Applications
-
-When you receive a `DRAFT_READY` alert, review the draft and send:
+Example approval request:
 
 ```bash
-# Approve
 curl -X POST http://localhost:5678/webhook/approval \
   -H "Content-Type: application/json" \
-  -d '{"application_id": "YOUR_APP_ID", "action": "approve"}'
+  -d '{"application_id":"YOUR_APP_ID","action":"approve"}'
+```
 
-# Reject
+Example rejection:
+
+```bash
 curl -X POST http://localhost:5678/webhook/approval \
   -H "Content-Type: application/json" \
-  -d '{"application_id": "YOUR_APP_ID", "action": "reject"}'
+  -d '{"application_id":"YOUR_APP_ID","action":"reject"}'
 ```
 
-The system will **never submit without an explicit approve call.**
+## Configuration Notes
 
----
+### Applicant profile files
 
-## Responding to NEEDS_USER_INPUT
+The schema lives at `profile/applicant_profile.schema.json`.
+The example file is intentionally blanked out so it is safe to publish.
 
-When a form has a question your profile doesn't cover:
+### Config files
 
-1. Check `novel_questions` in the applications table:
-   ```sql
-   SELECT novel_questions FROM applications WHERE application_id = 'YOUR_APP_ID';
-   ```
-2. Add the answer template to `profile/applicant_XX.json` under `short_answer_templates`
-3. Re-trigger drafting for that application via n8n manual trigger on workflow 04
-4. Once draft is complete, approve normally
+The three files in `config/` are also intentionally minimal in this repo.
+They are meant to be copied and customized locally, not used as production-ready defaults.
 
----
+### Secrets and local data
 
-## Handling needs_attention
+These are ignored by Git:
 
-These require manual intervention. Common causes:
+- `.env`
+- `data/`
+- `node_modules/`
+- `package-lock.json`
+- real applicant profile JSON files under `profile/`
 
-| Alert Type | What to do |
-|---|---|
-| `CAPTCHA_BLOCKED` | Visit the careers URL manually, solve once, then re-run discovery for that company |
-| `AUTH_EXPIRED` | Re-authenticate on the careers site, update any session tokens in your secrets |
-| `SELECTOR_BROKEN` | The site's DOM changed. Update the ATS Parser in workflow 02 for that platform |
-| `STALE_ATTENTION` | Check the `jobs` table for that record and update `status` manually after resolving |
+## Scripts
 
----
+- `scripts/init_db.sql`
+  Creates the SQLite schema.
+- `scripts/normalize.js`
+  Contains normalization logic used by the workflow pipeline.
+- `scripts/browser_agent.js`
+  Stub for browser-driven application automation.
+- `scripts/setup_credentials.sh`
+  Helper for local credential setup.
 
-## Adding Companies
+## Current Limitations
 
-Edit `config/target_companies.json`. Add an entry following the existing schema:
+- `package.json` does not yet define a real automated test suite.
+- The browser automation sidecar is still a starting point, not a finished production agent.
+- The public config files are intentionally empty starter versions, so this repo needs local setup before it does useful work.
 
-```json
-{
-  "company_id": "acme_corp",
-  "display_name": "Acme Corp",
-  "aliases": ["Acme", "Acme Inc"],
-  "careers_url": "https://acmecorp.com/careers",
-  "aggregator_search_hint": "acme corp internship fall 2026",
-  "tier": 4,
-  "ats_platform": "greenhouse",
-  "active": true,
-  "notes": ""
-}
-```
+## Suggested Next Improvements
 
-Set `"active": false` to pause scraping without removing the entry.
+- add a real `npm test` command
+- document the expected SQLite schema with examples
+- add sample `n8n` screenshots or import instructions
+- add a local development script for first-time setup
+- add validation checks for config and profile JSON files
 
-**Known ATS platforms** (affects how pages are parsed in workflow 02):
-- `greenhouse` — JSON API feed, most reliable
-- `lever` — JSON API feed, reliable
-- `workday` — JS-rendered, requires browser
-- `taleo` — JS-rendered, requires browser
-- `google_careers`, `apple_jobs`, `amazon_jobs`, `microsoft_careers` — custom parsers
+## License
 
----
-
-## Database Queries
-
-```sql
--- See all eligible jobs not yet applied to
-SELECT company_display, title_normalized, location_normalized, role_family, source_url
-FROM jobs WHERE status = 'eligible';
-
--- See all applications awaiting approval
-SELECT a.application_id, j.company_display, j.title_normalized, a.draft_status, a.profile_id
-FROM applications a JOIN jobs j ON a.job_key = j.job_key
-WHERE a.approval_status = 'pending' AND a.draft_status = 'draft_complete';
-
--- See submitted applications
-SELECT j.company_display, j.title_normalized, a.submitted_at, a.profile_id
-FROM applications a JOIN jobs j ON a.job_key = j.job_key
-WHERE a.submitted_at IS NOT NULL
-ORDER BY a.submitted_at DESC;
-
--- See what needs attention
-SELECT company_display, title_normalized, source_url, filter_reason, updated_at
-FROM jobs WHERE status = 'needs_attention';
-```
-
----
-
-## Safe-Stop Conditions
-
-Workflow 07 (runs daily at 2am) will pause all polling and alert you if:
-- 3+ companies simultaneously in `needs_attention`
-- 5+ crawl failures in the last 24 hours
-- Secret store (profile files) unreadable
-
-To resume after a safe-stop: resolve the underlying issue, then manually re-activate workflow 01 in the n8n UI.
+No license is currently defined in `package.json`.
+If you plan to share or reuse this project publicly, add one explicitly.
